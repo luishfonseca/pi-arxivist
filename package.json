@@ -1,0 +1,44 @@
+{
+  "name": "pi-arxivist",
+  "version": "0.1.0",
+  "description": "Fetch arxiv papers as Markdown (pi extension)",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint src/",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm run format:check"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "dependencies": {
+    "pandoc-wasm": "^1.1.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.4",
+    "@earendil-works/pi-tui": "^0.79.4",
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^22.19.21",
+    "eslint": "^9.39.4",
+    "prettier": "^3.8.4",
+    "typebox": "^1.2.11",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.61.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
