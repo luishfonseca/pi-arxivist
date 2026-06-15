@@ -7,12 +7,8 @@ Arxiv provides LaTeX source tarballs for most papers. `fetch_arxiv` downloads th
 ## Install
 
 ```bash
-cp -r pi-arxivist ~/.pi/agent/extensions/
-cd ~/.pi/agent/extensions/pi-arxivist
-npm install
+pi install npm:pi-arxivist
 ```
-
-Restart pi. The `fetch_arxiv` tool will be available.
 
 ## Usage
 
