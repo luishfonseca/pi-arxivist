@@ -11,10 +11,10 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { downloadSource } from "./arxiv.ts";
-import { flatten } from "./flatten.ts";
-import { extractMeta, PANDOC_FROM, PANDOC_TO, runPandoc, runPandocJson } from "./pandoc.ts";
-import { findMainTex, parseArxivId } from "./utils.ts";
+import { downloadSource } from "./arxiv.js";
+import { flatten } from "./flatten.js";
+import { extractMeta, PANDOC_FROM, PANDOC_TO, runPandoc, runPandocJson } from "./pandoc.js";
+import { findMainTex, parseArxivId } from "./utils.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
