@@ -13,7 +13,7 @@ npm run format  # auto-fix formatting
 
 ## Changesets
 
-Create a changeset for every non-trivial change (features, fixes, breaking changes). Skip for formatting, typo fixes, or internal refactors that don't affect behavior.
+Create a changeset for every non-trivial change (features, fixes, breaking changes). Skip for formatting, typo fixes, or internal refactors that don't affect behavior. Commit the changeset together with the code — never in a separate commit.
 
 ```bash
 npx changeset
