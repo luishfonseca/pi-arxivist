@@ -46,16 +46,16 @@ export default function arxivist(pi: ExtensionAPI): void {
     name: "fetch_arxiv",
     label: "Fetch Arxiv",
     description:
-      "Fetch an arxiv paper by ID or URL, download the LaTeX source, " +
-      "flatten \\input/\\include references, convert to Markdown via pandoc, " +
-      "and return the result.",
+      "Download an arxiv paper as clean Markdown with metadata. " +
+      "Returns title, authors, abstract, and the full paper body (truncated to fit context). " +
+      "Use this whenever the user asks about a specific arxiv paper — the structured Markdown " +
+      "is far better than scraping a PDF.",
     parameters: Type.Object({
       id: Type.String({
         description:
           "Arxiv paper identifier. Accepts bare ID ('1203.6859'), " +
           "abstract URL ('https://arxiv.org/abs/1203.6859'), " +
-          "or PDF URL ('https://arxiv.org/pdf/1203.6859'). " +
-          "Version suffix like 'v2' is preserved.",
+          "or PDF URL ('https://arxiv.org/pdf/1203.6859').",
       }),
     }),
     async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
@@ -114,7 +114,7 @@ export default function arxivist(pi: ExtensionAPI): void {
         const wasTruncated = pandocResult.output.length > truncated.content.length;
 
         const text = [
-          `[fetch_arxiv] ${id}: "${metadata.title}"`,
+          `${id}: "${metadata.title}"`,
           `Authors: ${metadata.authors}`,
           `Output: ${outputPath} (${String(totalLines)} lines, ${formatBytes(bytes)})`,
           metadata.abstract ? `\n## Abstract\n${metadata.abstract}\n` : "",
@@ -122,7 +122,8 @@ export default function arxivist(pi: ExtensionAPI): void {
           truncated.content,
           "",
           "---",
-          `Preamble (macro definitions): ${preamblePath}`,
+          `Preamble with \\newcommand definitions: ${preamblePath} — read this if you encounter unfamiliar LaTeX commands.`,
+          `Source artifacts (bib, figures): ${srcDir}`,
           `[Full paper at ${outputPath}. Use read to inspect.]`,
         ]
           .filter((s) => s !== "")
