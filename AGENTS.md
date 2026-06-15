@@ -11,6 +11,16 @@ npm run check   # typecheck + lint + format:check
 npm run format  # auto-fix formatting
 ```
 
+## Changesets
+
+Create a changeset for every non-trivial change (features, fixes, breaking changes). Skip for formatting, typo fixes, or internal refactors that don't affect behavior.
+
+```bash
+npx changeset
+```
+
+Changesets are committed alongside the code. The human is responsible for releasing — never run `npm run version` or `npm publish` yourself.
+
 ## Key principles
 
 - **Fail hard.** Never degrade silently — notify the user via `ctx.ui.notify()`.
