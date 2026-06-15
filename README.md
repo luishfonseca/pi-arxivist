@@ -1,6 +1,6 @@
 # pi-arxivist
 
-A [pi](https://github.com/earendil-works/pi) extension that adds a `fetch_arxiv` tool.
+Fetch arxiv papers as clean Markdown, right inside [pi](https://github.com/earendil-works/pi). Zero config, zero system dependencies.
 
 Arxiv provides LaTeX source tarballs for most papers. `fetch_arxiv` downloads the source, flattens `\input`/`\include` references, and converts the result to Markdown via pandoc. No PDF extraction, no garbled math, no lost structure.
 
