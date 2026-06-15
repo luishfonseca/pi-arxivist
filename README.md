@@ -15,7 +15,7 @@ pi install npm:pi-arxivist
 ```
 fetch_arxiv 1203.6859
 fetch_arxiv https://arxiv.org/abs/1203.6859
-fetch_arxiv https://arxiv.org/pdf/1203.6859v2
+fetch_arxiv https://arxiv.org/pdf/1203.6859
 ```
 
 Accepts bare IDs, abstract URLs, or PDF URLs. Version suffixes are preserved.
