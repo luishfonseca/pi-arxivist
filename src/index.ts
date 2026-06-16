@@ -30,6 +30,7 @@ function emptyDetails() {
   return {
     id: "",
     title: null as string | null,
+    abstract: null as string | null,
     path: "",
     preamblePath: "",
     lines: 0,
@@ -43,9 +44,9 @@ interface PaperMeta {
   abstract: string | null;
 }
 
-/** Extract \title{...} from LaTeX source. */
+/** Extract \title[...]{...} from LaTeX source (handles optional arg). */
 function extractTitle(source: string): string | null {
-  const m = /\\title\{([^}]*)\}/.exec(source);
+  const m = /\\title(?:\[[^\]]*\])?\{([^}]*)\}/.exec(source);
   return m?.[1]?.trim() ?? null;
 }
 
@@ -60,6 +61,36 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${String(bytes)} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Minimal theme interface for TUI rendering helpers. */
+interface RenderTheme {
+  fg(color: string, text: string): string;
+  bold(text: string): string;
+}
+
+/** Build the collapsed summary text shown when the tool result isn't expanded. */
+function formatCollapsedSummary(result: { details: unknown }, theme: RenderTheme): string {
+  const details = result.details as Record<string, unknown> | null | undefined;
+  const title = typeof details?.title === "string" ? details.title : null;
+  const abstract = typeof details?.abstract === "string" ? details.abstract : null;
+  const lines = typeof details?.lines === "number" ? details.lines : 0;
+  const bytes = typeof details?.bytes === "number" ? details.bytes : 0;
+
+  const parts: string[] = [];
+
+  if (title) {
+    parts.push(theme.fg("toolOutput", `"${title}"`));
+  }
+  if (abstract) {
+    const short = abstract.length > 300 ? `${abstract.slice(0, 300)}…` : abstract;
+    parts.push(theme.fg("dim", short));
+  }
+  parts.push(
+    theme.fg("muted", `(${String(lines)} lines, ${formatBytes(bytes)}) — use expand to read`),
+  );
+
+  return parts.join("\n");
 }
 
 /** Extract text content from a tool result for TUI rendering. */
@@ -77,6 +108,7 @@ function getTextFromResult(result: {
 function formatResult(
   id: string,
   title: string | null,
+  abstract: string | null,
   outputPath: string,
   preamblePath: string,
   srcDir: string,
@@ -129,6 +161,7 @@ function formatResult(
     details: {
       id,
       title,
+      abstract,
       path: outputPath,
       preamblePath,
       lines: totalLines,
@@ -168,20 +201,25 @@ export default function arxivist(pi: ExtensionAPI): void {
       return new Text(`${theme.bold("fetch_arxiv")} ${theme.fg("accent", args.id)}`, 0, 0);
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
-      // Show nothing when collapsed (the renderCall already shows the id).
-      // Show the full content when expanded or on error.
-      if (!expanded && !context.isError) {
-        return new Text("", 0, 0);
-      }
-
       if (isPartial) {
         return new Text(theme.fg("warning", "Fetching arxiv paper…"), 0, 0);
       }
 
+      // Error: show the error text even when collapsed
+      if (context.isError) {
+        const text = getTextFromResult(result);
+        if (text !== null) return new Text(theme.fg("toolOutput", text), 0, 0);
+        return new Text("", 0, 0);
+      }
+
+      // Collapsed: show title and abstract with "expand to read" hint
+      if (!expanded) {
+        return new Text(formatCollapsedSummary(result, theme), 0, 0);
+      }
+
+      // Expanded: show the full output
       const text = getTextFromResult(result);
       if (text === null) return new Text("", 0, 0);
-
-      // When expanded, show the full output
       return new Text(theme.fg("toolOutput", text), 0, 0);
     },
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
@@ -205,7 +243,15 @@ export default function arxivist(pi: ExtensionAPI): void {
         if (existsSync(outputPath) && existsSync(metaPath)) {
           const body = readFileSync(outputPath, "utf-8");
           const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as PaperMeta;
-          return formatResult(id, meta.title, outputPath, preamblePath, srcDir, body);
+          return formatResult(
+            id,
+            meta.title,
+            meta.abstract,
+            outputPath,
+            preamblePath,
+            srcDir,
+            body,
+          );
         }
 
         // 4. Find main.tex
@@ -222,7 +268,7 @@ export default function arxivist(pi: ExtensionAPI): void {
         writeFileSync(preamblePath, preamble, "utf-8");
 
         // 7. Extract metadata from LaTeX source
-        const title = extractTitle(preamble);
+        const title = extractTitle(body);
         const abstract = extractAbstract(body);
 
         // 8. Convert body to Markdown
@@ -241,7 +287,15 @@ export default function arxivist(pi: ExtensionAPI): void {
         writeFileSync(metaPath, JSON.stringify({ title, abstract } satisfies PaperMeta), "utf-8");
 
         // 10. Return result
-        return formatResult(id, title, outputPath, preamblePath, srcDir, pandocResult.output);
+        return formatResult(
+          id,
+          title,
+          abstract,
+          outputPath,
+          preamblePath,
+          srcDir,
+          pandocResult.output,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         ctx.ui.notify(`fetch_arxiv error: ${msg}`, "error");
