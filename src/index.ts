@@ -83,12 +83,9 @@ function formatCollapsedSummary(result: { details: unknown }, theme: RenderTheme
     parts.push(theme.fg("toolOutput", `"${title}"`));
   }
   if (abstract) {
-    const short = abstract.length > 300 ? `${abstract.slice(0, 300)}…` : abstract;
-    parts.push(theme.fg("dim", short));
+    parts.push(theme.fg("dim", abstract));
   }
-  parts.push(
-    theme.fg("muted", `(${String(lines)} lines, ${formatBytes(bytes)}) — use expand to read`),
-  );
+  parts.push(theme.fg("muted", `(${String(lines)} lines, ${formatBytes(bytes)})`));
 
   return parts.join("\n");
 }
