@@ -19,7 +19,7 @@ Create a changeset for every non-trivial change (features, fixes, breaking chang
 npx changeset
 ```
 
-Changesets are committed alongside the code. The human is responsible for releasing — never run `npm run version` or `npm publish` yourself.
+Changesets are committed alongside the code. Never run `npm publish` yourself. Run `npm run version` only when asked directly.
 
 ## Key principles
 
