@@ -19,7 +19,7 @@ The extension lives as a directory with `package.json` in
 | Output location | `/tmp/pi-arxivist/<id>/`. Deterministic path doubles as a cache. |
 | Converter | Pandoc via WASM (`pandoc-wasm` npm package). No system install required. |
 | Flattener | Custom JS using regex string operations. |
-| Metadata extraction | Pandoc in `standalone: true` mode on the full flattened source; YAML frontmatter is parsed for title, author, abstract. |
+| Metadata extraction | Pandoc in `standalone: true` mode on the body; title extracted from preamble via regex and injected into YAML frontmatter. |
 | Pre-processor | None. `-latex_macros` disables pandoc's macro expansion, avoiding crashes from unbalanced environments inside `\newcommand` bodies. `+raw_tex` passes unknown commands through as semantic tokens. |
 | Package structure | Directory with `package.json` (needed for pi discovery) |
 | Markdown flavor | `markdown+tex_math_dollars+raw_tex+fenced_code_attributes+bracketed_spans` |
@@ -40,9 +40,10 @@ The extension lives as a directory with `package.json` in
 ├── package-lock.json
 └── src/
     ├── index.ts             # Extension entry: registers fetch_arxiv tool
-    ├── arxiv.ts             # Download + extract arxiv source tarball
-    ├── flatten.ts           # Regex-based recursive flattener (resolves \input, \include)
-    ├── pandoc.ts            # Pandoc WASM wrapper (convert API)
+    ├── arxiv.ts             # Download + extract arxiv source tarball (async)
+    ├── flatten.ts           # Regex-based recursive flattener (async)
+    ├── pandoc.ts            # Pandoc wrapper — spawns worker, no direct WASM
+    ├── pandoc-worker.ts     # Worker thread: runs pandoc-wasm off main thread
     └── utils.ts             # ID parsing, main.tex detection, file helpers
 ```
 
@@ -95,7 +96,7 @@ fetch_arxiv(id)
   │
   ├─ 2. Check cache:
   │      If /tmp/pi-arxivist/{id}/ exists and has content → skip download.
-  │      If output/paper.md + output/meta.json exist → skip to step 11 (return cached result).
+  │      If output/paper.md exists → skip to step 11 (return cached result).
   │
   ├─ 3. Download source tarball:
   │      GET https://arxiv.org/e-print/{id}
@@ -115,27 +116,27 @@ fetch_arxiv(id)
   │      - Save preamble to {workdir}/preamble.tex
   │        (LLM can inspect macro definitions via read if needed)
   │
-  ├─ 8. Extract metadata via pandoc JSON:
-  │      pandoc-wasm convert({ from: "latex...", to: "json" }, fullSource)
-  │      → JSON.parse → walk AST meta block
-  │      → title, author list, abstract text (structured, no regex)
+  ├─ 8. Extract title from preamble via regex:
+  │      /\\title\{([^}]*)\}/ on the preamble string
   │
-  ├─ 9. Convert body to Markdown:
+  ├─ 9. Convert body to Markdown (single pandoc call):
   │      pandoc-wasm convert({
   │        from: "latex-latex_macros+raw_tex",
   │        to: "markdown+tex_math_dollars+raw_tex+
   │             fenced_code_attributes+bracketed_spans",
+  │        standalone: true,
   │        wrap: "none",
   │      }, body)
+  │      Runs in a worker thread — no event-loop blocking.
   │      - -latex_macros disables pandoc's \newcommand expansion
   │      - +raw_tex passes unknown commands through as raw TeX
+  │      - standalone: true emits YAML frontmatter (abstract, bibliography)
   │
-  ├─ 10. Post-process:
-  │      - Strip temporary LaTeX artifacts
+  ├─ 10. Inject title into YAML frontmatter
   │
   └─ 11. Return result:
          - Truncate body via truncateHead
-         - Include: title, authors, abstract (from pandoc metadata)
+         - YAML frontmatter (title, abstract) inline in Markdown output
          - Include: file path, line count, file size
          - Include: "Full paper at {path}. Use read to inspect."
 ```
@@ -163,9 +164,6 @@ Output: {path} ({lines} lines, {size})
   }],
   details: {
     id: string,
-    title: string,
-    authors: string,
-    abstract: string,
     path: string,        // absolute path to output.md
     preamblePath: string, // absolute path to preamble.tex
     lines: number,
@@ -182,10 +180,10 @@ Output: {path} ({lines} lines, {size})
 ### Core algorithm
 
 ```
-function flatten(mainPath: string): string
+async function flatten(mainPath: string): Promise<string>
   1. rootDir = dirname(mainPath)
   2. resolving = new Set()    // cycle detection (chain tracker)
-  3. return resolveFile(mainPath, rootDir, resolving, 0)
+  3. return await resolveFile(mainPath, rootDir, resolving, 0)
 
 function resolveFile(path, currentDir, resolving, depth):
   1. absPath = resolve(currentDir, path) + auto-append .tex
@@ -193,10 +191,10 @@ function resolveFile(path, currentDir, resolving, depth):
   3. if depth > MAX_DEPTH → throw
   4. if absPath in resolving → throw (circular reference)
   5. resolving.add(absPath)
-  6. source = readFile(absPath)
+  6. source = await fs.promises.readFile(absPath, "utf-8")
   7. strip whole-line comments (^%)
-  8. regex-replace \input{file} / \include{file} with
-     recursively resolved content
+  8. collect \input/\include matches, resolve children async,
+     apply replacements in reverse order
   9. if child resolution returns "" → leave original command
  10. finally: resolving.delete(absPath)
  11. return source
@@ -237,9 +235,8 @@ We use `from: "latex-latex_macros+raw_tex"` and `standalone: true`:
   Macro names like `\SL`, `\wpCh` carry semantic meaning — more useful to
   an LLM than their LaTeX implementations.
 - **`standalone: true`**: Pandoc emits a YAML metadata block at the top of
-  the output. This is parsed to extract title, author, and abstract — more
-  robust than regex matching (handles nested braces, `\thanks` footnotes,
-  and multi-line fields).
+  the output (abstract, bibliography). Title is injected from the preamble
+  via regex since `\title` lives in the preamble which isn't sent to pandoc.
 
 ---
 
@@ -282,20 +279,21 @@ auto-cleaned.
 ### API
 
 ```typescript
-import { convert } from "pandoc-wasm";
+// pandoc.ts spawns a worker thread (pandoc-worker.ts) per call.
+// No direct pandoc-wasm import needed in the main module.
 
 interface PandocOptions {
-  from: string;
-  to: string;
+  from?: string;
+  to?: string;
   wrap?: "none" | "auto" | "preserve";
-  standalone?: boolean;
+  standalone?: boolean;  // default true
 }
 
 async function runPandoc(
-  source: string,              // flattened LaTeX source
-  options: PandocOptions,
+  source: string,
+  options?: PandocOptions,
 ): Promise<{
-  output: string;              // converted markdown
+  output: string;
   stderr: string;
   warnings: Array<{ message: string }>;
 }>
@@ -303,8 +301,11 @@ async function runPandoc(
 
 ### How it works
 
-Pandoc runs as WebAssembly in the same Node.js process. Input is passed
-via stdin (the `source` parameter). Output is captured from stdout.
+Pandoc runs as WebAssembly in a **dedicated worker thread** (`pandoc-worker.ts`).
+The worker is spawned fresh per call via `new Worker(url, { workerData: { source, options } })`.
+The worker imports `pandoc-wasm`, runs `convert()`, posts the result back,
+and is terminated. The ~40 MB WASM heap lives and dies with the worker —
+the main thread's event loop stays responsive throughout.
 
 No `child_process`, no PATH lookup, no install instructions. Pandoc is
 an npm dependency.
@@ -314,10 +315,10 @@ an npm dependency.
 ## Post-processing
 
 After pandoc conversion:
-1. **YAML metadata**: Parsed from the `standalone` output frontmatter, then
-   stripped from the displayed body.
-2. **LaTeX artifacts**: Strip any `\hypertarget{...}{...}` or similar that
-   leaked through.
+1. **Title injection**: Title extracted from preamble via `/\\title\{([^}]*)\}/`
+   and injected into the YAML frontmatter.
+2. **YAML frontmatter**: Left as-is in the output — acts as metadata that the
+   LLM can read directly. No separate parsing step.
 
 ---
 
@@ -329,9 +330,8 @@ After pandoc conversion:
 | `tar` | system | Extract arxiv tarballs (available on all systems) |
 | `@earendil-works/pi-coding-agent` | pi SDK | `registerTool`, `truncateHead` |
 | `typebox` | pi SDK | Tool parameter schema |
-| `@earendil-works/pi-tui` | pi SDK | Custom rendering (optional) |
 
-Note: the flattener uses only `node:fs` and `node:path` (no npm dependencies).
+Note: the flattener uses only `node:fs/promises` and `node:path` (no npm dependencies).
 
 ---
 
@@ -348,8 +348,8 @@ some native `\input` support) or produce a warning. No data is lost.
 ### 2. Pandoc WASM limitations
 The WASM build cannot produce PDFs (requires external LaTeX engine),
 can't fetch HTTP resources, and JSON filters are unsupported. Memory is
-limited by the WASM heap (64MB configured). Large papers with many images
-may hit memory limits.
+limited by the WASM heap (64MB configured). Since the worker is terminated
+after each call, the heap is freed — no accumulation across calls.
 
 **Mitigation**: our use case (LaTeX → Markdown, no PDF, no HTTP, no
 filters) stays within WASM capabilities. `raw_tex` preserves unknown
