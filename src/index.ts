@@ -4,6 +4,9 @@
  * Registers the `fetch_arxiv` tool: downloads arxiv LaTeX source,
  * flattens \\input/\\include, converts to Markdown via pandoc WASM,
  * and returns the result.
+ *
+ * Metadata (title, authors, abstract) is included as YAML frontmatter
+ * in the Markdown output — no separate metadata file needed.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -13,25 +16,8 @@ import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { downloadSource } from "./arxiv.js";
 import { flatten } from "./flatten.js";
-import {
-  type ExtractedMeta,
-  extractMeta,
-  PANDOC_FROM,
-  PANDOC_TO,
-  runPandoc,
-  runPandocJson,
-} from "./pandoc.js";
+import { runPandoc } from "./pandoc.js";
 import { findMainTex, parseArxivId } from "./utils.js";
-
-// ── Types ────────────────────────────────────────────────────────────
-
-interface CachedResult {
-  meta: ExtractedMeta;
-  preamblePath: string;
-  outputPath: string;
-  totalLines: number;
-  bytes: number;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -39,15 +25,18 @@ interface CachedResult {
 function emptyDetails() {
   return {
     id: "",
-    title: "",
-    authors: "",
-    abstract: "",
     path: "",
     preamblePath: "",
     lines: 0,
     bytes: 0,
     truncated: false,
   };
+}
+
+/** Extract \title{...} from LaTeX preamble. */
+function extractTitle(preamble: string): string | null {
+  const m = /\\title\{([^}]*)\}/.exec(preamble);
+  return m?.[1]?.trim() ?? null;
 }
 
 function formatBytes(bytes: number): string {
@@ -58,7 +47,6 @@ function formatBytes(bytes: number): string {
 
 function formatResult(
   id: string,
-  meta: ExtractedMeta,
   outputPath: string,
   preamblePath: string,
   srcDir: string,
@@ -73,28 +61,20 @@ function formatResult(
   const wasTruncated = body.length > truncated.content.length;
 
   const text = [
-    `${id}: "${meta.title}"`,
-    `Authors: ${meta.authors}`,
+    id,
     `Output: ${outputPath} (${String(totalLines)} lines, ${formatBytes(bytes)})`,
-    meta.abstract ? `\n## Abstract\n${meta.abstract}\n` : "",
-    "---",
+    "",
     truncated.content,
     "",
-    "---",
     `Preamble with \\newcommand definitions: ${preamblePath} — read this if you encounter unfamiliar LaTeX commands.`,
     `Source artifacts (bib, figures): ${srcDir}`,
     `[Full paper at ${outputPath}. Use read to inspect.]`,
-  ]
-    .filter((s) => s !== "")
-    .join("\n");
+  ].join("\n");
 
   return {
     content: [{ type: "text", text }],
     details: {
       id,
-      title: meta.title,
-      authors: meta.authors,
-      abstract: meta.abstract,
       path: outputPath,
       preamblePath,
       lines: totalLines,
@@ -135,47 +115,43 @@ export default function arxivist(pi: ExtensionAPI): void {
         const srcDir = await downloadSource(id, signal);
 
         // 3. If fully cached (output already generated), return immediately
-        const outputPath = join(srcDir, "output", "paper.md");
-        const metaPath = join(srcDir, "output", "meta.json");
-        const preamblePath = join(srcDir, "preamble.tex");
+        const outputDir = join(srcDir, "output");
+        const outputPath = join(outputDir, "paper.md");
+        const preamblePath = join(outputDir, "preamble.tex");
 
-        if (existsSync(outputPath) && existsSync(metaPath)) {
+        if (existsSync(outputPath)) {
           const body = readFileSync(outputPath, "utf-8");
-          const cached = JSON.parse(readFileSync(metaPath, "utf-8")) as CachedResult;
-          return formatResult(
-            id,
-            cached.meta,
-            outputPath,
-            preamblePath,
-            srcDir,
-            cached.totalLines,
-            cached.bytes,
-            body,
-          );
+          const totalLines = body.split("\n").length;
+          const bytes = Buffer.byteLength(body);
+          return formatResult(id, outputPath, preamblePath, srcDir, totalLines, bytes, body);
         }
 
         // 4. Find main.tex
         const mainPath = findMainTex(srcDir);
 
-        // 5. Flatten \input/\include
-        const flattened = flatten(mainPath);
+        // 5. Flatten \input/\include (async — reads files without blocking)
+        const flattened = await flatten(mainPath);
 
-        // 6. Split preamble / body
+        // 6. Split preamble / body; save preamble for inspection
         const docBegin = flattened.indexOf("\\begin{document}");
         const preamble = docBegin >= 0 ? flattened.slice(0, docBegin) : "";
         const body = docBegin >= 0 ? flattened.slice(docBegin) : flattened;
+        mkdirSync(outputDir, { recursive: true });
         writeFileSync(preamblePath, preamble, "utf-8");
 
-        // 7. Extract metadata via pandoc JSON (structured AST, no regex)
-        const jsonDoc = await runPandocJson(flattened);
-        const metadata = extractMeta(jsonDoc);
+        // 7. Extract title from preamble
+        const title = extractTitle(preamble);
 
-        // 8. Convert body to Markdown
-        const pandocResult = await runPandoc(body, {
-          from: PANDOC_FROM,
-          to: PANDOC_TO,
-          wrap: "none",
-        });
+        // 8. Convert body to Markdown (abstract from body via standalone YAML)
+        let pandocResult = await runPandoc(body);
+
+        // 9. Inject title into YAML frontmatter (right after opening ---)
+        if (title && pandocResult.output.startsWith("---\n")) {
+          pandocResult = {
+            ...pandocResult,
+            output: "---\n" + `title: ${JSON.stringify(title)}\n` + pandocResult.output.slice(4),
+          };
+        }
 
         if (!pandocResult.output) {
           ctx.ui.notify(`Pandoc produced no output for ${id}: ${pandocResult.stderr}`, "error");
@@ -185,28 +161,15 @@ export default function arxivist(pi: ExtensionAPI): void {
           };
         }
 
-        // 9. Write output
-        const outputDir = join(srcDir, "output");
-        mkdirSync(outputDir, { recursive: true });
+        // 8. Write output (doubles as cache for future requests)
         writeFileSync(outputPath, pandocResult.output, "utf-8");
 
         const totalLines = pandocResult.output.split("\n").length;
         const bytes = Buffer.byteLength(pandocResult.output);
 
-        // 10. Write metadata alongside output so future cache hits skip the pipeline
-        const cached: CachedResult = {
-          meta: metadata,
-          preamblePath,
-          outputPath,
-          totalLines,
-          bytes,
-        };
-        writeFileSync(metaPath, JSON.stringify(cached), "utf-8");
-
-        // 11. Return result
+        // 9. Return result
         return formatResult(
           id,
-          metadata,
           outputPath,
           preamblePath,
           srcDir,

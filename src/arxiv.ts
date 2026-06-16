@@ -47,10 +47,7 @@ function effectiveRoot(workDir: string): string {
  * @param signal Optional AbortSignal to cancel the operation.
  * @returns Path to the directory containing the extracted source files.
  */
-export async function downloadSource(
-  id: string,
-  signal?: AbortSignal,
-): Promise<string> {
+export async function downloadSource(id: string, signal?: AbortSignal): Promise<string> {
   const workDir = cacheDir(id);
 
   // Cache hit: directory already exists with extracted content
@@ -111,26 +108,20 @@ export async function downloadSource(
  *
  * Unlike `execSync`, this does NOT block the event loop.
  */
-function spawnAsync(
-  command: string,
-  args: string[],
-  signal?: AbortSignal,
-): Promise<void> {
+function spawnAsync(command: string, args: string[], signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     // Already aborted before we even spawn
     if (signal?.aborted) {
-      reject(signal.reason ?? new Error("Aborted"));
+      reject(new Error("Aborted"));
       return;
     }
 
     const child = spawn(command, args, {
       stdio: "pipe",
-      // Detach from parent so we can kill the child independently
-      // without the parent waiting for it on exit.
     });
 
     let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
+    child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf-8");
     });
 
@@ -151,18 +142,16 @@ function spawnAsync(
       reject(err);
     });
 
-    child.on("close", (code, _sig) => {
+    child.on("close", (code) => {
       signal?.removeEventListener("abort", onAbort);
       if (code === 0) {
         resolve();
+      } else if (signal?.aborted) {
+        reject(new Error("Aborted"));
       } else {
-        const reason =
-          signal?.aborted
-            ? signal.reason ?? new Error("Aborted")
-            : new Error(
-                `tar exited with code ${String(code)}${stderr ? `: ${stderr.trim()}` : ""}`,
-              );
-        reject(reason);
+        reject(
+          new Error(`tar exited with code ${String(code)}${stderr ? `: ${stderr.trim()}` : ""}`),
+        );
       }
     });
   });

@@ -2,20 +2,22 @@
  * LaTeX flattener: resolves \\input and \\include commands by inlining
  * sub-file content via regex string replacement.
  *
- * Zero npm dependencies.  ~100 lines.
+ * Zero npm dependencies.  ~120 lines.
+ *
+ * All file I/O is async — nothing blocks the event loop.
  */
 
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 const MAX_DEPTH = 20;
 
 // ── Public API ────────────────────────────────────────────────────────
 
-export function flatten(mainPath: string): string {
+export async function flatten(mainPath: string): Promise<string> {
   const rootDir = path.dirname(path.resolve(mainPath));
 
-  const mainSource = fs.readFileSync(mainPath, "utf-8");
+  const mainSource = await fs.readFile(mainPath, "utf-8");
   const includeOnly = parseIncludeOnly(mainSource);
 
   const resolving = new Set<string>();
@@ -24,19 +26,21 @@ export function flatten(mainPath: string): string {
 
 // ── Core ──────────────────────────────────────────────────────────────
 
-function resolveFile(
+async function resolveFile(
   filePath: string,
   currentDir: string,
   resolving: Set<string>,
   includeOnly: Set<string> | null,
   depth: number,
-): string {
+): Promise<string> {
   if (depth > MAX_DEPTH) {
     throw new Error(`Max \\input depth (${String(MAX_DEPTH)}) exceeded at: ${filePath}`);
   }
 
-  const absPath = resolveFilePath(filePath, currentDir);
-  if (absPath === null) return ""; // missing → leave \input as-is
+  const result = await readTexFile(filePath, currentDir);
+  if (result === null) return ""; // missing → leave \input as-is
+
+  const absPath = result.absPath;
 
   if (resolving.has(absPath)) {
     throw new Error(`Circular reference detected: ${absPath}`);
@@ -44,29 +48,16 @@ function resolveFile(
   resolving.add(absPath);
 
   try {
-    const source = fs.readFileSync(absPath, "utf-8");
+    const source = result.source;
     const newDir = path.dirname(absPath);
 
     // Strip whole-line comments
     let processed = source.replace(/^\s*%.*$/gm, "");
 
-    // Resolve \input and \include
-    processed = processed.replace(
-      /\\(input|include)\{([^}]*)\}/g,
-      (match, cmd: string, filename: string) => {
-        if (filename.includes("\\")) return match; // macro filename
-
-        if (cmd === "include" && includeOnly !== null) {
-          const clean = filename.trim();
-          if (!includeOnly.has(clean) && !includeOnly.has(clean + ".tex")) {
-            return "";
-          }
-        }
-
-        const child = resolveFile(filename.trim(), newDir, resolving, includeOnly, depth + 1);
-        return child === "" ? match : child;
-      },
-    );
+    // Resolve \input and \include asynchronously.
+    // String.replace can't take an async callback, so we collect matches
+    // first, resolve children, then apply replacements in reverse order.
+    processed = await resolveInputs(processed, newDir, resolving, includeOnly, depth);
 
     return processed;
   } finally {
@@ -74,15 +65,105 @@ function resolveFile(
   }
 }
 
+// ── Async input resolution ────────────────────────────────────────────
+
+const INPUT_REGEX = /\\(input|include)\{([^}]*)\}/g;
+
+interface Match {
+  start: number;
+  end: number;
+  cmd: string;
+  filename: string;
+  fullMatch: string;
+}
+
+async function resolveInputs(
+  source: string,
+  newDir: string,
+  resolving: Set<string>,
+  includeOnly: Set<string> | null,
+  depth: number,
+): Promise<string> {
+  // Collect all matches
+  const matches: Match[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = INPUT_REGEX.exec(source)) !== null) {
+    matches.push({
+      start: m.index,
+      end: INPUT_REGEX.lastIndex,
+      cmd: m[1] ?? "",
+      filename: m[2] ?? "",
+      fullMatch: m[0],
+    });
+  }
+
+  if (matches.length === 0) return source;
+
+  // Resolve each child asynchronously (depth-first, sequential).
+  // Siblings are independent but resolving them in parallel would
+  // complicate the `resolving` set management — sequential is simple
+  // and fast enough for the typical number of includes in a paper.
+  const resolved: string[] = [];
+  for (const match of matches) {
+    resolved.push(await resolveMatch(match, newDir, resolving, includeOnly, depth));
+  }
+
+  // Apply replacements in reverse order to preserve indices
+  let result = source;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const m = matches[i];
+    const r = resolved[i];
+    if (m && r !== undefined) {
+      result = result.slice(0, m.start) + r + result.slice(m.end);
+    }
+  }
+
+  return result;
+}
+
+async function resolveMatch(
+  match: Match,
+  newDir: string,
+  resolving: Set<string>,
+  includeOnly: Set<string> | null,
+  depth: number,
+): Promise<string> {
+  // Skip macro-based filenames (e.g. \input{\jobname-foo})
+  if (match.filename.includes("\\")) return match.fullMatch;
+
+  // Respect \includeonly allowlist
+  if (match.cmd === "include" && includeOnly !== null) {
+    const clean = match.filename.trim();
+    if (!includeOnly.has(clean) && !includeOnly.has(clean + ".tex")) {
+      return "";
+    }
+  }
+
+  const child = await resolveFile(match.filename.trim(), newDir, resolving, includeOnly, depth + 1);
+  return child === "" ? match.fullMatch : child;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
-function resolveFilePath(filename: string, currentDir: string): string | null {
-  const exact = path.resolve(currentDir, filename);
-  if (fs.existsSync(exact)) return exact;
+interface ReadResult {
+  source: string;
+  absPath: string;
+}
 
+async function readTexFile(filename: string, currentDir: string): Promise<ReadResult | null> {
+  const candidates = [path.resolve(currentDir, filename)];
   if (!filename.endsWith(".tex")) {
-    const withTex = path.resolve(currentDir, filename + ".tex");
-    if (fs.existsSync(withTex)) return withTex;
+    candidates.push(path.resolve(currentDir, filename + ".tex"));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const source = await fs.readFile(candidate, "utf-8");
+      return { source, absPath: candidate };
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      // ENOENT → try next candidate
+    }
   }
 
   return null;
