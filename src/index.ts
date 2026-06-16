@@ -41,11 +41,6 @@ function emptyDetails() {
   };
 }
 
-interface PaperMeta {
-  title: string | null;
-  abstract: string | null;
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${String(bytes)} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -206,9 +201,9 @@ export default function arxivist(pi: ExtensionAPI): void {
           let title: string | null = null;
           let abstract: string | null = null;
           if (existsSync(metaPath)) {
-            const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as PaperMeta;
-            title = meta.title;
-            abstract = meta.abstract;
+            const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as Record<string, unknown>;
+            title = typeof meta.title === "string" ? meta.title : null;
+            abstract = typeof meta.abstract === "string" ? meta.abstract : null;
           }
           return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, body);
         }
@@ -241,7 +236,7 @@ export default function arxivist(pi: ExtensionAPI): void {
             ? split.frontmatterParsed.abstract
             : null;
 
-        writeFileSync(metaPath, JSON.stringify({ title, abstract } satisfies PaperMeta), "utf-8");
+        writeFileSync(metaPath, JSON.stringify(split.frontmatterParsed), "utf-8");
 
         if (split.preamble) {
           writeFileSync(preamblePath, split.preamble, "utf-8");

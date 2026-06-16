@@ -23,7 +23,7 @@ Accepts bare IDs, abstract URLs, or PDF URLs.
 ## What it returns
 
 - **`paper.md`** — full paper in the cache directory, math preserved as `$...$` / `$$...$$`
-- **`meta.json`** — structured metadata (title, abstract)
+- **`meta.json`** — full frontmatter as JSON (title, abstract, authors, etc.)
 - **`preamble.tex`** — macro definitions that pandoc couldn't process, extracted for inspection
 
 The tool truncates output to fit context limits. Use `read` on the output path for the full paper.
