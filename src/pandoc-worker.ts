@@ -19,8 +19,9 @@ async function main(): Promise<void> {
       {
         from: "latex-latex_macros+raw_tex",
         to: "markdown+tex_math_dollars+raw_tex+fenced_code_attributes+bracketed_spans",
-        standalone: false,
+        standalone: true,
         wrap: "none",
+        "shift-heading-level-by": 1,
       },
       input.source,
       {},

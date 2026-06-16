@@ -5,8 +5,10 @@
  * flattens \\input/\\include, converts to Markdown via pandoc WASM,
  * and returns the result.
  *
- * Metadata is extracted via regex from the LaTeX source and stored in
- * meta.json alongside the Markdown output.
+ * Pandoc --standalone produces YAML frontmatter which is parsed into
+ * meta.json. A human-readable title/abstract heading is injected at
+ * the top of the Markdown output instead. Preamble macros that pandoc
+ * couldn't process are extracted to preamble.tex.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -21,7 +23,7 @@ import { Type } from "typebox";
 import { downloadSource } from "./arxiv.js";
 import { flatten } from "./flatten.js";
 import { runPandoc } from "./pandoc.js";
-import { findMainTex, parseArxivId } from "./utils.js";
+import { findMainTex, parseArxivId, splitPandocOutput } from "./utils.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -42,19 +44,6 @@ function emptyDetails() {
 interface PaperMeta {
   title: string | null;
   abstract: string | null;
-}
-
-/** Extract \title[...]{...} from LaTeX source (handles optional arg). */
-function extractTitle(source: string): string | null {
-  const m = /\\title(?:\[[^\]]*\])?\{([^}]*)\}/.exec(source);
-  return m?.[1]?.trim() ?? null;
-}
-
-/** Extract the body of \begin{abstract}...\end{abstract} from LaTeX source. */
-function extractAbstract(source: string): string | null {
-  const m = /\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/.exec(source);
-  if (!m?.[1]) return null;
-  return m[1].trim() || null;
 }
 
 function formatBytes(bytes: number): string {
@@ -183,7 +172,7 @@ export default function arxivist(pi: ExtensionAPI): void {
     label: "Fetch Arxiv",
     description:
       "Download an arxiv paper as clean Markdown with metadata. " +
-      "Returns title, abstract, and the full paper body (truncated to fit context). " +
+      "Returns the full paper as Markdown with YAML frontmatter (truncated to fit context). " +
       "Use this whenever the user asks about a specific arxiv paper — the structured Markdown " +
       "is far better than scraping a PDF.",
     parameters: Type.Object({
@@ -234,21 +223,18 @@ export default function arxivist(pi: ExtensionAPI): void {
         const outputDir = join(srcDir, "output");
         const outputPath = join(outputDir, "paper.md");
         const preamblePath = join(outputDir, "preamble.tex");
-
         const metaPath = join(outputDir, "meta.json");
 
-        if (existsSync(outputPath) && existsSync(metaPath)) {
+        if (existsSync(outputPath)) {
           const body = readFileSync(outputPath, "utf-8");
-          const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as PaperMeta;
-          return formatResult(
-            id,
-            meta.title,
-            meta.abstract,
-            outputPath,
-            preamblePath,
-            srcDir,
-            body,
-          );
+          let title: string | null = null;
+          let abstract: string | null = null;
+          if (existsSync(metaPath)) {
+            const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as PaperMeta;
+            title = meta.title;
+            abstract = meta.abstract;
+          }
+          return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, body);
         }
 
         // 4. Find main.tex
@@ -257,19 +243,9 @@ export default function arxivist(pi: ExtensionAPI): void {
         // 5. Flatten \input/\include (async — reads files without blocking)
         const flattened = await flatten(mainPath);
 
-        // 6. Split preamble / body; save preamble for inspection
-        const docBegin = flattened.indexOf("\\begin{document}");
-        const preamble = docBegin >= 0 ? flattened.slice(0, docBegin) : "";
-        const body = docBegin >= 0 ? flattened.slice(docBegin) : flattened;
+        // 6. Convert full source to Markdown via pandoc (standalone → YAML frontmatter)
         mkdirSync(outputDir, { recursive: true });
-        writeFileSync(preamblePath, preamble, "utf-8");
-
-        // 7. Extract metadata from LaTeX source
-        const title = extractTitle(body);
-        const abstract = extractAbstract(body);
-
-        // 8. Convert body to Markdown
-        const pandocResult = await runPandoc(body);
+        const pandocResult = await runPandoc(flattened);
 
         if (!pandocResult.output) {
           ctx.ui.notify(`Pandoc produced no output for ${id}: ${pandocResult.stderr}`, "error");
@@ -279,20 +255,30 @@ export default function arxivist(pi: ExtensionAPI): void {
           };
         }
 
-        // 9. Write output (doubles as cache for future requests)
-        writeFileSync(outputPath, pandocResult.output, "utf-8");
+        // 7. Split pandoc output: frontmatter (→ meta.json), preamble (→ preamble.tex), body
+        const split = splitPandocOutput(pandocResult.output);
+
+        const title =
+          typeof split.frontmatterParsed.title === "string" ? split.frontmatterParsed.title : null;
+        const abstract =
+          typeof split.frontmatterParsed.abstract === "string"
+            ? split.frontmatterParsed.abstract
+            : null;
+
         writeFileSync(metaPath, JSON.stringify({ title, abstract } satisfies PaperMeta), "utf-8");
 
-        // 10. Return result
-        return formatResult(
-          id,
-          title,
-          abstract,
-          outputPath,
-          preamblePath,
-          srcDir,
-          pandocResult.output,
-        );
+        if (split.preamble) {
+          writeFileSync(preamblePath, split.preamble, "utf-8");
+        }
+
+        // 8. Write cleaned paper.md: injected # title + abstract, then body (no YAML frontmatter)
+        const heading = title ? `# ${title}\n\n` : "";
+        const abstractBlock = abstract ? `${abstract}\n\n` : "";
+        const cleanOutput = heading + abstractBlock + split.body;
+        writeFileSync(outputPath, cleanOutput, "utf-8");
+
+        // 9. Return result
+        return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, cleanOutput);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         ctx.ui.notify(`fetch_arxiv error: ${msg}`, "error");

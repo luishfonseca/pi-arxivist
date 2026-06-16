@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parse as parseYaml } from "yaml";
 
 /**
  * Parse an arxiv paper identifier from various input formats.
@@ -88,4 +89,58 @@ function readHead(filePath: string, maxBytes: number): string {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+// ── Post-pandoc splitting ─────────────────────────────────────────────
+
+export interface SplitResult {
+  frontmatterRaw: string;
+  frontmatterParsed: Record<string, unknown>;
+  preamble: string;
+  body: string;
+}
+
+/**
+ * Split pandoc standalone output into frontmatter, preamble, and body.
+ *
+ * Frontmatter is the YAML block between the first `---` delimiters.
+ * Preamble is everything between the frontmatter and the first `#` heading.
+ * Body is everything from the first `#` heading onwards.
+ */
+export function splitPandocOutput(output: string): SplitResult {
+  // Extract frontmatter: between first --- and second ---
+  const fmMatch = /^---\n([\s\S]*?)\n---/.exec(output);
+
+  let frontmatterRaw = "";
+  let frontmatterParsed: Record<string, unknown> = {};
+  let afterFm = output;
+
+  if (fmMatch) {
+    frontmatterRaw = fmMatch[0];
+    const fmYaml = fmMatch[1] ?? "";
+    try {
+      const parsed: unknown = parseYaml(fmYaml);
+      if (typeof parsed === "object" && parsed !== null) {
+        frontmatterParsed = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Frontmatter parse failure is non-fatal
+    }
+    afterFm = output.slice(fmMatch.index + fmMatch[0].length);
+  }
+
+  // Find first markdown heading (any level — pandoc may shift them)
+  const headingMatch = /(?:^|\n)(#{1,6} .*)/.exec(afterFm);
+
+  let preamble = "";
+  let body = afterFm;
+
+  if (headingMatch) {
+    const leadingNewline = afterFm[headingMatch.index] === "\n" ? 1 : 0;
+    const headingStart = headingMatch.index + leadingNewline;
+    preamble = afterFm.slice(0, headingStart).trim();
+    body = afterFm.slice(headingStart);
+  }
+
+  return { frontmatterRaw, frontmatterParsed, preamble, body };
 }
