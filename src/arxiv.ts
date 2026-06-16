@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 const ARXIV_E_PRINT = "https://arxiv.org/e-print/";
 
@@ -51,20 +52,37 @@ export async function downloadSource(id: string, signal?: AbortSignal): Promise<
       );
     }
 
-    // Arxiv returns HTML when no source is available
     const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
-    if (contentType.includes("html")) {
-      await response.text(); // consume body
-      throw new Error(
-        `No LaTeX source available for "${id}". Arxiv returned an HTML page (no source tarball).`,
-      );
+
+    // Arxiv returns gzip for LaTeX source (either a tar.gz tarball or a
+    // single gzipped .tex file for older pre-2007 submissions).  Anything
+    // else means no LaTeX source is available.
+    if (!contentType.includes("gzip") && !contentType.includes("x-gzip")) {
+      await response.body?.cancel();
+      throw new Error(`No LaTeX source available for "${id}" (Content-Type: ${contentType}).`);
     }
 
     const buf = Buffer.from(await response.arrayBuffer());
     writeFileSync(tarball, buf);
 
-    // Extract (tarball persists for debugging)
-    await spawnAsync("tar", ["-xzf", tarball, "-C", workDir], signal);
+    // Most papers ship as tar.gz, but older submissions (pre-2007,
+    // old-style IDs) are a single gzipped .tex file with no tar wrapper.
+    // Content-Type alone can't distinguish them — try tar first.
+    try {
+      await spawnAsync("tar", ["-xzf", tarball, "-C", workDir], signal);
+    } catch {
+      // Not a tar archive — decompress as a single gzipped file.
+      try {
+        const tex = gunzipSync(buf);
+        writeFileSync(join(workDir, "paper.tex"), tex);
+      } catch (gunzipErr) {
+        const msg = gunzipErr instanceof Error ? gunzipErr.message : String(gunzipErr);
+        throw new Error(
+          `Failed to extract arxiv source for "${id}": not a gzipped tar archive, ` +
+            `and not a gzipped file either (${msg}).`,
+        );
+      }
+    }
 
     return workDir;
   } catch (err) {

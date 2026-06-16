@@ -86,8 +86,10 @@ export function parseLatexGraph(rootDir: string): ParsedGraph {
   for (const absPath of texFiles) {
     let content = fs.readFileSync(absPath, "utf-8");
 
-    // Strip whole-line comments (same behaviour as old flattener)
-    content = content.replace(/^\s*%.*$/gm, "");
+    // Replace whole-line comments with bare "%" to preserve TeX line
+    // structure.  Deleting the line entirely can join adjacent lines
+    // that were separated by a % comment, confusing pandoc's parser.
+    content = content.replace(/^\s*%.*$/gm, "%");
 
     const dir = path.dirname(absPath);
     const refs: string[] = [];
