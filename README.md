@@ -32,8 +32,8 @@ The tool truncates output to fit context limits. Use `read` on the output path f
 
 1. Downloads the source tarball from `arxiv.org/e-print/<id>`
 2. Extracts with `tar`
-3. Finds the main `.tex` file (heuristic: first file with `\documentclass`)
-4. Recursively resolves `\input`/`\include` commands into a single flat document
+3. Builds a dependency graph from `\input`/`\include` references across all `.tex` files, and selects the root by indegree
+4. Resolves the graph into a single flat document (circular-reference-safe, `\includeonly`-aware)
 5. Converts the full source to Markdown via the official [pandoc WASM binary](https://www.npmjs.com/package/pandoc-wasm)
 6. Extracts metadata from the pandoc-generated YAML frontmatter
 7. Extracts unprocessed preamble macros to `preamble.tex`
