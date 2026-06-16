@@ -2,8 +2,6 @@
 
 A pi extension that provides a `fetch_arxiv` tool: download arxiv LaTeX source, flatten `\input`/`\include`, convert to Markdown via pandoc.
 
-Full design, pipeline, and edge cases: [PLAN.md](./PLAN.md).
-
 ## Development
 
 ```bash

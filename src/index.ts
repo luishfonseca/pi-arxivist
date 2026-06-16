@@ -23,7 +23,7 @@ import { Type } from "typebox";
 import { downloadSource } from "./arxiv.js";
 import { flatten } from "./flatten.js";
 import { runPandoc } from "./pandoc.js";
-import { findMainTex, parseArxivId, splitPandocOutput } from "./utils.js";
+import { parseArxivId, parseLatexGraph, splitPandocOutput } from "./utils.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -208,11 +208,11 @@ export default function arxivist(pi: ExtensionAPI): void {
           return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, body);
         }
 
-        // 4. Find main.tex
-        const mainPath = findMainTex(srcDir);
+        // 4. Parse all .tex files, build graph, pick root
+        const graph = parseLatexGraph(srcDir);
 
-        // 5. Flatten \input/\include (async — reads files without blocking)
-        const flattened = await flatten(mainPath);
+        // 5. Flatten \input/\include from the graph root
+        const flattened = flatten(graph);
 
         // 6. Convert full source to Markdown via pandoc (standalone → YAML frontmatter)
         mkdirSync(outputDir, { recursive: true });
