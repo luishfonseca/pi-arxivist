@@ -183,7 +183,7 @@ export default function arxivist(pi: ExtensionAPI): void {
     label: "Fetch Arxiv",
     description:
       "Download an arxiv paper as clean Markdown with metadata. " +
-      "Returns title, authors, abstract, and the full paper body (truncated to fit context). " +
+      "Returns title, abstract, and the full paper body (truncated to fit context). " +
       "Use this whenever the user asks about a specific arxiv paper — the structured Markdown " +
       "is far better than scraping a PDF.",
     parameters: Type.Object({

@@ -11,16 +11,20 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { convert } from "pandoc-wasm";
 
-interface WorkerInput {
-  source: string;
-  options: Record<string, unknown>;
-}
-
-const input = workerData as WorkerInput;
+const input = workerData as { source: string };
 
 async function main(): Promise<void> {
   try {
-    const result = await convert(input.options, input.source, {});
+    const result = await convert(
+      {
+        from: "latex-latex_macros+raw_tex",
+        to: "markdown+tex_math_dollars+raw_tex+fenced_code_attributes+bracketed_spans",
+        standalone: false,
+        wrap: "none",
+      },
+      input.source,
+      {},
+    );
     parentPort?.postMessage({
       type: "ok",
       stdout: result.stdout,
