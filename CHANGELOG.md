@@ -1,5 +1,11 @@
 # pi-arxivist
 
+## 0.1.4
+
+### Patch Changes
+
+- 6010627: Add `renderCall`/`renderResult` so the TUI shows a compact one-liner instead of flooding the screen with the full truncated body. Fix truncation metadata: use correct `truncated` boolean, show accurate line/byte stats in the header, and only include truncation footer when actually truncated.
+
 ## 0.1.3
 
 ### Patch Changes
