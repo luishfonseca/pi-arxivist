@@ -107,49 +107,26 @@ function formatResult(
   const totalBytes = Buffer.byteLength(body);
   const truncation = truncateHead(body);
 
-  // Build the output header line
-  let outputHeader: string;
+  let resultText = truncation.content;
+
   if (truncation.truncated) {
-    const by = String(truncation.truncatedBy);
-    outputHeader = [
-      `Output: ${outputPath}`,
-      `(${String(truncation.outputLines)} of ${String(truncation.totalLines)} lines`,
-      `${formatBytes(truncation.outputBytes)} of ${formatBytes(truncation.totalBytes)}`,
-      `— truncated by ${by})`,
-    ].join(" ");
-  } else {
-    outputHeader = `Output: ${outputPath} (${String(totalLines)} lines, ${formatBytes(totalBytes)})`;
-  }
-
-  const parts = [id, outputHeader, "", truncation.content];
-
-  // Truncation footer — only when truncated
-  if (truncation.truncated) {
-    parts.push(
-      "",
-      `[Truncated by ${String(truncation.truncatedBy)}: showing ${String(truncation.outputLines)} of ${String(truncation.totalLines)} lines (${formatBytes(truncation.outputBytes)} of ${formatBytes(truncation.totalBytes)}). Full paper at ${outputPath}. Use read to inspect.]`,
-    );
-  }
-
-  parts.push(
-    "",
-    `Preamble with \\newcommand definitions: ${preamblePath} — read this if you encounter unfamiliar LaTeX commands.`,
-    `Source artifacts (bib, figures): ${srcDir}`,
-  );
-
-  // Always include the "full paper" hint when there's more to read
-  if (!truncation.truncated) {
-    parts.push(`[Full paper at ${outputPath}. Use read to inspect.]`);
+    const omittedLines = truncation.totalLines - truncation.outputLines;
+    const omittedBytes = truncation.totalBytes - truncation.outputBytes;
+    resultText += `\n\n[Output truncated: showing ${String(truncation.outputLines)} of ${String(truncation.totalLines)} lines`;
+    resultText += ` (${formatBytes(truncation.outputBytes)} of ${formatBytes(truncation.totalBytes)}).`;
+    resultText += ` ${String(omittedLines)} lines (${formatBytes(omittedBytes)}) omitted.`;
+    resultText += ` Full output saved to: ${outputPath}]`;
   }
 
   return {
-    content: [{ type: "text", text: parts.join("\n") }],
+    content: [{ type: "text", text: resultText }],
     details: {
       id,
       title,
       abstract,
       path: outputPath,
       preamblePath,
+      srcDir,
       lines: totalLines,
       bytes: totalBytes,
       truncated: truncation.truncated,
@@ -158,7 +135,6 @@ function formatResult(
         outputBytes: truncation.outputBytes,
         totalLines: truncation.totalLines,
         totalBytes: truncation.totalBytes,
-        truncatedBy: truncation.truncatedBy,
       } satisfies Partial<TruncationResult>,
     },
   };

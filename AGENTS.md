@@ -15,9 +15,17 @@ npm run format  # auto-fix formatting
 
 Create a changeset for every non-trivial change (features, fixes, breaking changes). Skip for formatting, typo fixes, or internal refactors that don't affect behavior. Commit the changeset together with the code — never in a separate commit.
 
-```bash
-npx changeset
+Write changeset files manually — the `npx changeset` interactive CLI does not work with piped input in a non-TTY environment. Format:
+
+```markdown
+---
+"pi-arxivist": patch
+---
+
+Description of the change.
 ```
+
+Save as `.changeset/<descriptive-slug>.md`. Bump types: `patch`, `minor`, `major`.
 
 Changesets are committed alongside the code. Never run `npm publish` yourself. Run `npm run version` only when asked directly.
 
