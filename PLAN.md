@@ -94,7 +94,8 @@ fetch_arxiv(id)
   │      No format validation — invalid IDs fail at download time.
   │
   ├─ 2. Check cache:
-  │      If /tmp/pi-arxivist/{id}/ exists and has content → skip to step 5.
+  │      If /tmp/pi-arxivist/{id}/ exists and has content → skip download.
+  │      If output/paper.md + output/meta.json exist → skip to step 11 (return cached result).
   │
   ├─ 3. Download source tarball:
   │      GET https://arxiv.org/e-print/{id}

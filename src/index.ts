@@ -6,15 +6,32 @@
  * and returns the result.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { downloadSource } from "./arxiv.js";
 import { flatten } from "./flatten.js";
-import { extractMeta, PANDOC_FROM, PANDOC_TO, runPandoc, runPandocJson } from "./pandoc.js";
+import {
+  type ExtractedMeta,
+  extractMeta,
+  PANDOC_FROM,
+  PANDOC_TO,
+  runPandoc,
+  runPandocJson,
+} from "./pandoc.js";
 import { findMainTex, parseArxivId } from "./utils.js";
+
+// ── Types ────────────────────────────────────────────────────────────
+
+interface CachedResult {
+  meta: ExtractedMeta;
+  preamblePath: string;
+  outputPath: string;
+  totalLines: number;
+  bytes: number;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -39,6 +56,54 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatResult(
+  id: string,
+  meta: ExtractedMeta,
+  outputPath: string,
+  preamblePath: string,
+  srcDir: string,
+  totalLines: number,
+  bytes: number,
+  body: string,
+): {
+  content: Array<{ type: "text"; text: string }>;
+  details: Record<string, unknown>;
+} {
+  const truncated = truncateHead(body);
+  const wasTruncated = body.length > truncated.content.length;
+
+  const text = [
+    `${id}: "${meta.title}"`,
+    `Authors: ${meta.authors}`,
+    `Output: ${outputPath} (${String(totalLines)} lines, ${formatBytes(bytes)})`,
+    meta.abstract ? `\n## Abstract\n${meta.abstract}\n` : "",
+    "---",
+    truncated.content,
+    "",
+    "---",
+    `Preamble with \\newcommand definitions: ${preamblePath} — read this if you encounter unfamiliar LaTeX commands.`,
+    `Source artifacts (bib, figures): ${srcDir}`,
+    `[Full paper at ${outputPath}. Use read to inspect.]`,
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+
+  return {
+    content: [{ type: "text", text }],
+    details: {
+      id,
+      title: meta.title,
+      authors: meta.authors,
+      abstract: meta.abstract,
+      path: outputPath,
+      preamblePath,
+      lines: totalLines,
+      bytes,
+      truncated: wasTruncated,
+    },
+  };
+}
+
 // ── Tool registration ─────────────────────────────────────────────────
 
 export default function arxivist(pi: ExtensionAPI): void {
@@ -58,7 +123,7 @@ export default function arxivist(pi: ExtensionAPI): void {
           "or PDF URL ('https://arxiv.org/pdf/1203.6859').",
       }),
     }),
-    async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       let id = "";
 
       try {
@@ -66,27 +131,46 @@ export default function arxivist(pi: ExtensionAPI): void {
         id = parseArxivId(rawParams.id);
         ctx.ui.notify(`Fetching arxiv: ${id}…`);
 
-        // 2. Download & extract (cache-aware)
-        const srcDir = await downloadSource(id);
+        // 2. Download & extract (cache-aware, respects AbortSignal)
+        const srcDir = await downloadSource(id, signal);
 
-        // 3. Find main.tex
+        // 3. If fully cached (output already generated), return immediately
+        const outputPath = join(srcDir, "output", "paper.md");
+        const metaPath = join(srcDir, "output", "meta.json");
+        const preamblePath = join(srcDir, "preamble.tex");
+
+        if (existsSync(outputPath) && existsSync(metaPath)) {
+          const body = readFileSync(outputPath, "utf-8");
+          const cached = JSON.parse(readFileSync(metaPath, "utf-8")) as CachedResult;
+          return formatResult(
+            id,
+            cached.meta,
+            outputPath,
+            preamblePath,
+            srcDir,
+            cached.totalLines,
+            cached.bytes,
+            body,
+          );
+        }
+
+        // 4. Find main.tex
         const mainPath = findMainTex(srcDir);
 
-        // 4. Flatten \input/\include
+        // 5. Flatten \input/\include
         const flattened = flatten(mainPath);
 
-        // 5. Split preamble / body
+        // 6. Split preamble / body
         const docBegin = flattened.indexOf("\\begin{document}");
         const preamble = docBegin >= 0 ? flattened.slice(0, docBegin) : "";
         const body = docBegin >= 0 ? flattened.slice(docBegin) : flattened;
-        const preamblePath = join(srcDir, "preamble.tex");
         writeFileSync(preamblePath, preamble, "utf-8");
 
-        // 6. Extract metadata via pandoc JSON (structured AST, no regex)
+        // 7. Extract metadata via pandoc JSON (structured AST, no regex)
         const jsonDoc = await runPandocJson(flattened);
         const metadata = extractMeta(jsonDoc);
 
-        // 7. Convert body to Markdown
+        // 8. Convert body to Markdown
         const pandocResult = await runPandoc(body, {
           from: PANDOC_FROM,
           to: PANDOC_TO,
@@ -101,48 +185,35 @@ export default function arxivist(pi: ExtensionAPI): void {
           };
         }
 
-        // 8. Write output
+        // 9. Write output
         const outputDir = join(srcDir, "output");
         mkdirSync(outputDir, { recursive: true });
-        const outputPath = join(outputDir, "paper.md");
         writeFileSync(outputPath, pandocResult.output, "utf-8");
 
-        // 9. Truncate
         const totalLines = pandocResult.output.split("\n").length;
         const bytes = Buffer.byteLength(pandocResult.output);
-        const truncated = truncateHead(pandocResult.output);
-        const wasTruncated = pandocResult.output.length > truncated.content.length;
 
-        const text = [
-          `${id}: "${metadata.title}"`,
-          `Authors: ${metadata.authors}`,
-          `Output: ${outputPath} (${String(totalLines)} lines, ${formatBytes(bytes)})`,
-          metadata.abstract ? `\n## Abstract\n${metadata.abstract}\n` : "",
-          "---",
-          truncated.content,
-          "",
-          "---",
-          `Preamble with \\newcommand definitions: ${preamblePath} — read this if you encounter unfamiliar LaTeX commands.`,
-          `Source artifacts (bib, figures): ${srcDir}`,
-          `[Full paper at ${outputPath}. Use read to inspect.]`,
-        ]
-          .filter((s) => s !== "")
-          .join("\n");
-
-        return {
-          content: [{ type: "text", text }],
-          details: {
-            id,
-            title: metadata.title,
-            authors: metadata.authors,
-            abstract: metadata.abstract,
-            path: outputPath,
-            preamblePath,
-            lines: totalLines,
-            bytes,
-            truncated: wasTruncated,
-          },
+        // 10. Write metadata alongside output so future cache hits skip the pipeline
+        const cached: CachedResult = {
+          meta: metadata,
+          preamblePath,
+          outputPath,
+          totalLines,
+          bytes,
         };
+        writeFileSync(metaPath, JSON.stringify(cached), "utf-8");
+
+        // 11. Return result
+        return formatResult(
+          id,
+          metadata,
+          outputPath,
+          preamblePath,
+          srcDir,
+          totalLines,
+          bytes,
+          pandocResult.output,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         ctx.ui.notify(`fetch_arxiv error: ${msg}`, "error");
