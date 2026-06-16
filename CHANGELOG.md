@@ -1,5 +1,13 @@
 # pi-arxivist
 
+## 0.1.5
+
+### Patch Changes
+
+- 2004c93: Remove standalone pandoc mode, simplify pandoc options, and fix README claims about author extraction.
+- f0a2eb0: Post-pandoc splitting: YAML frontmatter parsed to meta.json, preamble macros extracted to preamble.tex, headings shifted down, title/abstract injected as human-readable header.
+- ce2aa92: Simplify truncation output: remove implementation headers, follow truncated-tool pattern.
+
 ## 0.1.4
 
 ### Patch Changes
