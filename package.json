@@ -1,6 +1,6 @@
 {
   "name": "pi-arxivist",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Fetch arxiv papers as Markdown (pi extension)",
   "type": "module",
   "main": "./dist/index.js",

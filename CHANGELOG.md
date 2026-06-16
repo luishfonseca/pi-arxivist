@@ -1,5 +1,17 @@
 # pi-arxivist
 
+## 0.1.6
+
+### Patch Changes
+
+- 252e22f: Gate source extraction on Content-Type instead of guessing. Arxiv returns `application/pdf` when no LaTeX source is available — previously this was saved as a `.tar.gz` and hit a cryptic zlib error. Now unsupported content types fail immediately with the actual type in the message. Also handle pre-2007 single-gzipped-.tex format via `gunzipSync` fallback instead of `tar` only.
+- 267d9ab: Replace heuristic `findMainTex` with graph-based `parseLatexGraph` that recursively maps all `.tex` files, builds dependency edges from `\input`/`\include`, and picks the indegree-0 node with the largest reachable set as root. `flatten` is now synchronous, operating on sentinelized content rather than doing async file I/O during resolution. Drop `effectiveRoot` in favor of recursive file discovery.
+- 252e22f: Fix extraction for old-style arxiv papers whose source is a single gzipped .tex file (no tar wrapper). Try tar first, fall back to raw gunzip.
+- 00252ea: Errors now throw instead of returning error results. The framework sets
+  `context.isError = true`, which triggers the error rendering path in
+  `renderResult` — errors appear inline in the tool call instead of as
+  `ctx.ui.notify()` popups.
+
 ## 0.1.5
 
 ### Patch Changes
