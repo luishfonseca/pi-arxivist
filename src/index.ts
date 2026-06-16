@@ -27,20 +27,6 @@ import { parseArxivId, parseLatexGraph, splitPandocOutput } from "./utils.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-/** Fresh details object — never share across invocations. */
-function emptyDetails() {
-  return {
-    id: "",
-    title: null as string | null,
-    abstract: null as string | null,
-    path: "",
-    preamblePath: "",
-    lines: 0,
-    bytes: 0,
-    truncated: false,
-  };
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${String(bytes)} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -179,85 +165,69 @@ export default function arxivist(pi: ExtensionAPI): void {
       if (text === null) return new Text("", 0, 0);
       return new Text(theme.fg("toolOutput", text), 0, 0);
     },
-    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
-      let id = "";
+    async execute(_toolCallId, rawParams, signal, _onUpdate, _ctx) {
+      // 1. Parse ID
+      const id = parseArxivId(rawParams.id);
 
-      try {
-        // 1. Parse ID
-        id = parseArxivId(rawParams.id);
-        ctx.ui.notify(`Fetching arxiv: ${id}…`);
+      // 2. Download & extract (cache-aware, respects AbortSignal)
+      const srcDir = await downloadSource(id, signal);
 
-        // 2. Download & extract (cache-aware, respects AbortSignal)
-        const srcDir = await downloadSource(id, signal);
+      // 3. If fully cached (output already generated), return immediately
+      const outputDir = join(srcDir, "output");
+      const outputPath = join(outputDir, "paper.md");
+      const preamblePath = join(outputDir, "preamble.tex");
+      const metaPath = join(outputDir, "meta.json");
 
-        // 3. If fully cached (output already generated), return immediately
-        const outputDir = join(srcDir, "output");
-        const outputPath = join(outputDir, "paper.md");
-        const preamblePath = join(outputDir, "preamble.tex");
-        const metaPath = join(outputDir, "meta.json");
-
-        if (existsSync(outputPath)) {
-          const body = readFileSync(outputPath, "utf-8");
-          let title: string | null = null;
-          let abstract: string | null = null;
-          if (existsSync(metaPath)) {
-            const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as Record<string, unknown>;
-            title = typeof meta.title === "string" ? meta.title : null;
-            abstract = typeof meta.abstract === "string" ? meta.abstract : null;
-          }
-          return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, body);
+      if (existsSync(outputPath)) {
+        const body = readFileSync(outputPath, "utf-8");
+        let title: string | null = null;
+        let abstract: string | null = null;
+        if (existsSync(metaPath)) {
+          const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as Record<string, unknown>;
+          title = typeof meta.title === "string" ? meta.title : null;
+          abstract = typeof meta.abstract === "string" ? meta.abstract : null;
         }
-
-        // 4. Parse all .tex files, build graph, pick root
-        const graph = parseLatexGraph(srcDir);
-
-        // 5. Flatten \input/\include from the graph root
-        const flattened = flatten(graph);
-
-        // 6. Convert full source to Markdown via pandoc (standalone → YAML frontmatter)
-        mkdirSync(outputDir, { recursive: true });
-        const pandocResult = await runPandoc(flattened);
-
-        if (!pandocResult.output) {
-          ctx.ui.notify(`Pandoc produced no output for ${id}: ${pandocResult.stderr}`, "error");
-          return {
-            content: [{ type: "text", text: `Pandoc failed: ${pandocResult.stderr}` }],
-            details: { ...emptyDetails(), id },
-          };
-        }
-
-        // 7. Split pandoc output: frontmatter (→ meta.json), preamble (→ preamble.tex), body
-        const split = splitPandocOutput(pandocResult.output);
-
-        const title =
-          typeof split.frontmatterParsed.title === "string" ? split.frontmatterParsed.title : null;
-        const abstract =
-          typeof split.frontmatterParsed.abstract === "string"
-            ? split.frontmatterParsed.abstract
-            : null;
-
-        writeFileSync(metaPath, JSON.stringify(split.frontmatterParsed), "utf-8");
-
-        if (split.preamble) {
-          writeFileSync(preamblePath, split.preamble, "utf-8");
-        }
-
-        // 8. Write cleaned paper.md: injected # title + abstract, then body (no YAML frontmatter)
-        const heading = title ? `# ${title}\n\n` : "";
-        const abstractBlock = abstract ? `${abstract}\n\n` : "";
-        const cleanOutput = heading + abstractBlock + split.body;
-        writeFileSync(outputPath, cleanOutput, "utf-8");
-
-        // 9. Return result
-        return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, cleanOutput);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`fetch_arxiv error: ${msg}`, "error");
-        return {
-          content: [{ type: "text", text: `fetch_arxiv failed: ${msg}` }],
-          details: { ...emptyDetails(), id },
-        };
+        return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, body);
       }
+
+      // 4. Parse all .tex files, build graph, pick root
+      const graph = parseLatexGraph(srcDir);
+
+      // 5. Flatten \input/\include from the graph root
+      const flattened = flatten(graph);
+
+      // 6. Convert full source to Markdown via pandoc (standalone → YAML frontmatter)
+      mkdirSync(outputDir, { recursive: true });
+      const pandocResult = await runPandoc(flattened);
+
+      if (!pandocResult.output) {
+        throw new Error(`Pandoc produced no output for ${id}: ${pandocResult.stderr}`);
+      }
+
+      // 7. Split pandoc output: frontmatter (→ meta.json), preamble (→ preamble.tex), body
+      const split = splitPandocOutput(pandocResult.output);
+
+      const title =
+        typeof split.frontmatterParsed.title === "string" ? split.frontmatterParsed.title : null;
+      const abstract =
+        typeof split.frontmatterParsed.abstract === "string"
+          ? split.frontmatterParsed.abstract
+          : null;
+
+      writeFileSync(metaPath, JSON.stringify(split.frontmatterParsed), "utf-8");
+
+      if (split.preamble) {
+        writeFileSync(preamblePath, split.preamble, "utf-8");
+      }
+
+      // 8. Write cleaned paper.md: injected # title + abstract, then body (no YAML frontmatter)
+      const heading = title ? `# ${title}\n\n` : "";
+      const abstractBlock = abstract ? `${abstract}\n\n` : "";
+      const cleanOutput = heading + abstractBlock + split.body;
+      writeFileSync(outputPath, cleanOutput, "utf-8");
+
+      // 9. Return result
+      return formatResult(id, title, abstract, outputPath, preamblePath, srcDir, cleanOutput);
     },
   });
 }
